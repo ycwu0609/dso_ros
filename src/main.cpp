@@ -36,7 +36,7 @@
 #include "util/Undistort.h"
 #include "IOWrapper/Pangolin/PangolinDSOViewer.h"
 #include "IOWrapper/OutputWrapper/SampleOutputWrapper.h"
-
+#include <image_transport/image_transport.h>
 
 #include <ros/ros.h>
 #include <sensor_msgs/image_encodings.h>
@@ -135,10 +135,17 @@ void parseArgument(char* arg)
 
 FullSystem* fullSystem = 0;
 Undistort* undistorter = 0;
+cv::Mat depth_img = cv::Mat(0,0,CV_32F);
 int frameID = 0;
+int count = 0;
 
 void vidCb(const sensor_msgs::ImageConstPtr img)
 {
+	ros::NodeHandle nh;
+	image_transport::ImageTransport it(nh);
+	image_transport::Publisher pub = it.advertise("depth_image", 1);
+
+	
 	cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(img, sensor_msgs::image_encodings::MONO8);
 	assert(cv_ptr->image.type() == CV_8U);
 	assert(cv_ptr->image.channels() == 1);
@@ -161,8 +168,26 @@ void vidCb(const sensor_msgs::ImageConstPtr img)
 	ImageAndExposure* undistImg = undistorter->undistort<unsigned char>(&minImg, 1,0, 1.0f);
 	fullSystem->addActiveFrame(undistImg, frameID);
 	frameID++;
+	count++;
 	delete undistImg;
 
+	///////////////////////////////////
+	
+	if(!setting_fullResetRequested)
+	{
+		for(IOWrap::Output3DWrapper* ow : fullSystem->outputWrapper)
+		{
+		    depth_img = ow->outputDepthImage().clone();
+		    //break;
+		    if(depth_img.rows != 0 && depth_img.cols != 0)
+		    {
+		    	sensor_msgs::ImagePtr msg;
+				msg = cv_bridge::CvImage(std_msgs::Header(), "bgra8", depth_img).toImageMsg();
+				pub.publish(msg);
+		    }
+		}
+	}
+	
 }
 
 
@@ -171,9 +196,9 @@ void vidCb(const sensor_msgs::ImageConstPtr img)
 
 int main( int argc, char** argv )
 {
+	std::cout<<argc<<" "<<argv<<std::endl;
 	ros::init(argc, argv, "dso_live");
-
-
+	ros::NodeHandle n;
 
 	for(int i=1; i<argc;i++) parseArgument(argv[i]);
 
@@ -213,16 +238,18 @@ int main( int argc, char** argv )
 	    		 (int)undistorter->getSize()[1]));
 
 
-    if(useSampleOutput)
+    if(useSampleOutput){
         fullSystem->outputWrapper.push_back(new IOWrap::SampleOutputWrapper());
-
+        
+	}
 
     if(undistorter->photometricUndist != 0)
     	fullSystem->setGammaFunction(undistorter->photometricUndist->getG());
-
-    ros::NodeHandle nh;
-    ros::Subscriber imgSub = nh.subscribe("image", 1, &vidCb);
-
+	
+    
+    ros::Subscriber imgSub = n.subscribe("image", 1, &vidCb);
+    
+	
     ros::spin();
 
     for(IOWrap::Output3DWrapper* ow : fullSystem->outputWrapper)
